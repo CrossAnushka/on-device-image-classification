@@ -26,14 +26,24 @@ def export_onnx(model, path: str, input_shape=(1, 3, 32, 32), opset: int = 17) -
     return path
 
 
-def export_tflite(model, path: str, input_shape=(1, 3, 32, 32), int8: bool = False, calib_loader=None) -> str | None:
-    """Convert to .tflite via ai-edge-torch. Returns None (with a hint) if unavailable."""
+def _edge_converter():
+    """Return the PyTorch->TFLite package (litert-torch, or its old ai-edge-torch name)."""
     try:
-        import ai_edge_torch
+        import litert_torch as edge  # ai-edge-torch was renamed to litert-torch
+        return edge
     except ImportError:
-        print("[export] ai-edge-torch not installed — skipping PyTorch->TFLite. "
-              "Install with `pip install ai-edge-torch` (needs a supported torch version), "
-              "or use the TensorFlow-native variant in tf/ for .tflite artifacts.")
+        import ai_edge_torch as edge
+        return edge
+
+
+def export_tflite(model, path: str, input_shape=(1, 3, 32, 32), int8: bool = False, calib_loader=None) -> str | None:
+    """Convert to .tflite via litert-torch (formerly ai-edge-torch). Returns None if unavailable."""
+    try:
+        edge = _edge_converter()
+    except ImportError:
+        print("[export] litert-torch / ai-edge-torch not installed — skipping PyTorch->TFLite. "
+              "Install with `pip install litert-torch`, or use the TensorFlow-native variant "
+              "in tf/ for .tflite artifacts.")
         return None
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -43,14 +53,14 @@ def export_tflite(model, path: str, input_shape=(1, 3, 32, 32), int8: bool = Fal
     quant_config = None
     if int8:
         try:
-            from ai_edge_torch.quantize import pt2e_quantizer, quant_config as qc
-            from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
-            from torch.export import export_for_training
+            pt2e_quantizer = edge.quantize.pt2e_quantizer
+            qc = edge.quantize.quant_config
+            from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_pt2e
 
             quantizer = pt2e_quantizer.PT2EQuantizer().set_global(
                 pt2e_quantizer.get_symmetric_quantization_config(is_per_channel=True)
             )
-            exported = export_for_training(model, sample).module()
+            exported = torch.export.export(model, sample).module()
             prepared = prepare_pt2e(exported, quantizer)
             if calib_loader is not None:
                 with torch.no_grad():
@@ -61,7 +71,7 @@ def export_tflite(model, path: str, input_shape=(1, 3, 32, 32), int8: bool = Fal
         except Exception as e:  # noqa: BLE001
             print(f"[export] INT8 TFLite path unavailable ({type(e).__name__}); exporting float TFLite.")
 
-    edge_model = ai_edge_torch.convert(model, sample, quant_config=quant_config)
+    edge_model = edge.convert(model, sample, quant_config=quant_config)
     edge_model.export(path)
     print(f"[export] TFLite written to {path}")
     return path
